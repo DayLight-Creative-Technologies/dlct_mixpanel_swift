@@ -1948,6 +1948,15 @@ extension MixpanelInstance {
             #if os(iOS) && !targetEnvironment(macCatalyst)
             self.autocaptureManager?.stop()
             #endif
+
+            // DLCT fork: purge the unsent queue. Queued after the `$delete` and `$set` (clearCharges)
+            // rows scheduled above, so those unidentified rows go too, and the flush scheduled above
+            // stops at the opted-out guard. Without this a later optInTracking() would send
+            // everything tracked before the opt-out (the 6.8.0 release notes promise this method
+            // purges queued data).
+            self.trackingQueue.async { [weak self] in
+                self?.mixpanelPersistence.removeAllEntities()
+            }
         }
     }
 

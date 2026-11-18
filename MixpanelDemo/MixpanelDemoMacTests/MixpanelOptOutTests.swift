@@ -206,7 +206,7 @@ class MixpanelOptOutTests: MixpanelBaseTests {
         removeDBfile(testMixpanel)
     }
 
-    func testEventBeingTrackedBeforeOptOutShouldNotBeCleared() {
+    func testEventsTrackedBeforeOptOutAreDiscarded() {
         let testMixpanel = Mixpanel.initialize(token: randomId())
         testMixpanel.track(event: "a normal event")
         waitForTrackingQueue(testMixpanel)
@@ -214,8 +214,8 @@ class MixpanelOptOutTests: MixpanelBaseTests {
         testMixpanel.optOutTracking()
         waitForTrackingQueue(testMixpanel)
         XCTAssertTrue(
-            eventQueue(token: testMixpanel.apiToken).count == 1,
-            "When opted out, any events tracked before opted out should not be cleared")
+            eventQueue(token: testMixpanel.apiToken).isEmpty,
+            "DLCT fork: opting out discards every event tracked before the opt-out")
         removeDBfile(testMixpanel)
     }
 
@@ -284,8 +284,8 @@ class MixpanelOptOutTests: MixpanelBaseTests {
         testMixpanel.flush()
         waitForTrackingQueue(testMixpanel)
         XCTAssertTrue(
-            peopleQueue(token: testMixpanel.apiToken).count == 1,
-            "When opted out, people queue should not be flushed")
+            peopleQueue(token: testMixpanel.apiToken).isEmpty,
+            "DLCT fork: opting out discards the people queue, so the flush after it has nothing to send")
         removeDBfile(testMixpanel)
     }
 
@@ -309,8 +309,8 @@ class MixpanelOptOutTests: MixpanelBaseTests {
         waitForTrackingQueue(testMixpanel)
 
         XCTAssertTrue(
-            eventQueue(token: testMixpanel.apiToken).count == 3,
-            "When opted out, events should not be flushed")
+            eventQueue(token: testMixpanel.apiToken).isEmpty,
+            "DLCT fork: opting out discards the events queue, so the flush after it has nothing to send")
         removeDBfile(testMixpanel)
     }
 }

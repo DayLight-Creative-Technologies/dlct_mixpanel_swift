@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		D17C0A022FFB000100A1B2C3 /* MixpanelOptOutPurgeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D17C0A012FFB000100A1B2C3 /* MixpanelOptOutPurgeTests.swift */; };
 		1668B43D2FF79B9C00AF2B30 /* JSONHandlerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1668B43B2FF79B9C00AF2B30 /* JSONHandlerTests.swift */; };
 		1668B43E2FF79B9C00AF2B30 /* MixpanelBackupHostTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1668B43C2FF79B9C00AF2B30 /* MixpanelBackupHostTests.swift */; };
 		169483E23037612D0080D934 /* SceneDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 169483E13037612D0080D934 /* SceneDelegate.swift */; };
@@ -227,6 +228,7 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+		D17C0A012FFB000100A1B2C3 /* MixpanelOptOutPurgeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MixpanelOptOutPurgeTests.swift; sourceTree = "<group>"; };
 		13D45F7C0AE3ED4B1DF5F0EF /* MixpanelDemoWatchApp.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MixpanelDemoWatchApp.swift; sourceTree = "<group>"; };
 		1668B43B2FF79B9C00AF2B30 /* JSONHandlerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JSONHandlerTests.swift; sourceTree = "<group>"; };
 		1668B43C2FF79B9C00AF2B30 /* MixpanelBackupHostTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MixpanelBackupHostTests.swift; sourceTree = "<group>"; };
@@ -590,6 +592,7 @@
 			children = (
 				1668B43B2FF79B9C00AF2B30 /* JSONHandlerTests.swift */,
 				1668B43C2FF79B9C00AF2B30 /* MixpanelBackupHostTests.swift */,
+				D17C0A012FFB000100A1B2C3 /* MixpanelOptOutPurgeTests.swift */,
 				174205512F15A7210031EEDC /* MixpanelDeviceIdProviderTests.swift */,
 				171E4C1B2DB055A900B7CB11 /* MixpanelFeatureFlagTests.swift */,
 				1A1B2C3D4E5F60718293A4B1 /* MixpanelFeatureFlagPersistenceTests.swift */,
@@ -1106,6 +1109,7 @@
 				E12406201D249B2500383635 /* MixpanelBaseTests.swift in Sources */,
 				1668B43D2FF79B9C00AF2B30 /* JSONHandlerTests.swift in Sources */,
 				1668B43E2FF79B9C00AF2B30 /* MixpanelBackupHostTests.swift in Sources */,
+				D17C0A022FFB000100A1B2C3 /* MixpanelOptOutPurgeTests.swift in Sources */,
 				E17AA05E1EC6234E0066EFE8 /* MixpanelAutomaticEventsTests.swift in Sources */,
 				E15FF7EC1D0461130076CDE3 /* MixpanelDemoTests.swift in Sources */,
 				171E4C1C2DB055BC00B7CB11 /* MixpanelFeatureFlagTests.swift in Sources */,

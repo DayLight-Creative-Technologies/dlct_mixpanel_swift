@@ -1,3 +1,65 @@
+# DayLight Creative Technologies fork (dlct_mixpanel_swift)
+
+This repository is a fork of [mixpanel/mixpanel-swift](https://github.com/mixpanel/mixpanel-swift) at 7.1.0. The podspec
+version stays `7.1.0` on purpose: `mixpanel_flutter` 3.2.0 pins `Mixpanel-swift` to exactly `7.1.0`, so a fork that kept
+another version would not resolve. Fork releases are named in this file and identified by commit SHA, not by tag.
+
+## 7.1.0-dlct.1 (2026-11-18)
+
+### Fixes
+
+- `optOutTracking()` now discards every unsent row of every persistence type (events, people and group updates, identified
+  or not). Before, it only stopped sending: a later `optInTracking()` and flush sent everything that had been tracked before
+  the opt-out. For an identified user the opt-out also queued a `$delete` and a `$set` (`clearCharges`) people update as
+  *unidentified* rows, and the next `identify()` stamped them onto the new identity and sent them.
+  - A block queued on `trackingQueue` after the inserts the opt-out schedules (`deleteUser()`, `clearCharges()`) deletes all
+    rows through `MPDB.deleteRows(_:isDeleteAll:)` (new `MixpanelPersistence.removeAllEntities()`). Nothing is sent at the
+    opt-out: the `flush()` the opt-out schedules for an identified user still stops at the opted-out guard.
+  - The existing opt-out tests that asserted the old behaviour (queued rows survive an opt-out) now assert the purge.
+  - New tests: `MixpanelOptOutPurgeTests` (`MixpanelDemo/MixpanelDemoTests`), run by `.github/workflows/build.yml`.
+
+### Upstream issue (text only, not filed)
+
+Title: `optOutTracking()` does not purge queued data, so a later `optInTracking()` sends it
+
+Body:
+
+> **Version:** 7.1.0
+>
+> The 6.8.0 release notes say: "`reset()` no longer deletes queued events, group updates or identified people updates. ...
+> Use `optOutTracking()` if you need to purge queued data."
+>
+> `optOutTracking()` does not purge queued data. In 7.1.0 (`MixpanelInstance.swift`, `optOutTracking()`) it only sets the
+> opted-out flag, which makes `track()`, `people` calls and `flush()` return early. Rows already in the SQLite queue stay
+> there, so after `optInTracking()` the next flush sends everything that was tracked before the opt-out.
+>
+> **Repro (anonymous):**
+> 1. `track("a")`, `track("b")`.
+> 2. `optOutTracking()`.
+> 3. `optInTracking()`, then `flush()`.
+> 4. The server receives `a` and `b`.
+>
+> **Repro (identified):**
+> 1. `identify("user-1")`, `track("a")`, `people.set(...)`.
+> 2. `optOutTracking()`. This schedules `people.deleteUser()` and `people.clearCharges()`. By the time they run, the same
+>    block has cleared `people.distinctId` and set the opted-out flag, so the `$delete` and the `$set` are saved as
+>    unidentified people rows and the scheduled `flush()` stops at the guard.
+> 3. `optInTracking()`, `identify("user-2")`, `flush()`.
+> 4. `identifyPeople(distinctId:)` stamps the unidentified `$delete` with `user-2`, so the new account's profile is deleted,
+>    and `a` and the `people.set` from before the opt-out are sent as well.
+>
+> **Why it matters:** an opt-out is the app's way to say "forget what this device did", for example when a privacy consent
+> is withdrawn. Data collected before the withdrawal must not be sent by a later opt-in. The Android SDK (8.12.0) empties its
+> queue on opt-out.
+>
+> **Suggested fix:** in `optOutTracking()`, after the inserts the opt-out schedules, queue a block on `trackingQueue` that
+> deletes all rows of every `PersistenceType` with `MPDB.deleteRows(_:isDeleteAll: true)`. Our fork's change is small
+> (`MixpanelInstance.swift` and `MixpanelPersistence.swift`), with XCTests against a stub server (`MixpanelOptOutPurgeTests`),
+> and updates the existing tests that asserted the queue survives an opt-out. Happy to open a PR if you want the behaviour
+> upstream.
+
+---
+
 Last tag: 7.0.0
 ## [7.1.0](https://github.com/mixpanel/mixpanel-swift/tree/7.1.0) (2026-10-30)
 

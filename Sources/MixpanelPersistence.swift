@@ -194,6 +194,15 @@ class MixpanelPersistence {
         }
     }
 
+    /// Deletes every queued row of every persistence type (events, people and groups), identified
+    /// or not. Used by `optOutTracking()` so nothing tracked before an opt-out can be sent after a
+    /// later opt-in.
+    func removeAllEntities() {
+        for type in PersistenceType.allCases {
+            mpdb.deleteRows(type, isDeleteAll: true)
+        }
+    }
+
     /// Drops people rows queued before identify. Their target identity was never known, so they
     /// can't be attributed after a reset.
     func removeUnidentifiedPeople() {

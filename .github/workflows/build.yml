@@ -1,0 +1,43 @@
+name: Build
+
+# DayLight Creative Technologies fork. SocialScoreKeeper pins this fork by commit SHA, and its
+# `scripts/check_fork_ci_green.py` (gate #76) requires the pinned commit to have a green run of this
+# workflow in which the job named below succeeded. Renaming the job breaks that gate, by design.
+#
+# A push to the default branch starts a run. GitHub keeps a fork's workflows dormant until Actions is
+# enabled for it, so a run can also be dispatched by hand:
+#   gh workflow run build.yml --repo DayLight-Creative-Technologies/dlct_mixpanel_swift --ref dlct-7.1.0
+
+on:
+  push:
+    branches: [ dlct-7.1.0 ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  xctest-ios:
+    name: XCTest (iOS)
+    runs-on: macos-26
+    timeout-minutes: 45
+    steps:
+    - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+    - uses: maxim-lobanov/setup-xcode@ed7a3b1fda3918c0306d1b724322adc0b8cc0a90  # v1
+      with:
+        xcode-version: '26'
+
+    # The whole iOS suite, MixpanelOptOutPurgeTests (the fork's change) included. No test retries: the
+    # purge tests guard children's privacy, so a flaky pass must not hide a real failure.
+    - name: Build and test (iOS Simulator)
+      working-directory: MixpanelDemo
+      run: |
+        set -o pipefail
+        NSUnbufferedIO=YES xcodebuild \
+          -scheme MixpanelDemo \
+          -derivedDataPath Build/ \
+          -destination "platform=iOS Simulator,name=iPhone 17 Pro,OS=latest" \
+          -configuration Debug \
+          ONLY_ACTIVE_ARCH=NO \
+          ENABLE_TESTABILITY=YES \
+          clean build test | xcbeautify --renderer github-actions
