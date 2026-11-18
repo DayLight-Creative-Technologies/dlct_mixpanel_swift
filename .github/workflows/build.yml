@@ -17,19 +17,19 @@ permissions:
   contents: read
 
 jobs:
-  # The fork's change, with no test retries: these tests guard children's privacy, so a flaky pass must
-  # not hide a real failure. MixpanelOptOutPurgeTests is the new suite; MixpanelOptOutTests holds the
-  # existing opt-out behaviour (two of its tests were updated for the purge).
   xctest-ios:
     name: XCTest (iOS)
     runs-on: macos-26
-    timeout-minutes: 45
+    timeout-minutes: 60
     steps:
     - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
     - uses: maxim-lobanov/setup-xcode@ed7a3b1fda3918c0306d1b724322adc0b8cc0a90  # v1
       with:
         xcode-version: '26'
 
+    # The fork's change, with no test retries: these tests guard children's privacy, so a flaky pass must
+    # not hide a real failure. MixpanelOptOutPurgeTests is the new suite; MixpanelOptOutTests holds the
+    # existing opt-out behaviour (two of its tests were updated for the purge).
     - name: Opt-out tests (iOS Simulator)
       working-directory: MixpanelDemo
       run: |
@@ -45,22 +45,12 @@ jobs:
           ENABLE_TESTABILITY=YES \
           clean build test | xcbeautify --renderer github-actions
 
-  # The whole upstream iOS suite, for visibility. Not required by gate #76: timing-sensitive upstream
-  # tests (the feature-flag latency bound, instrumented SwiftUI UI tests, the logger test) fail
-  # intermittently on hosted runners, with or without upstream's retries (two runs of this fork, 4 and 6
-  # failures, none in the opt-out tests). The job still shows what failed; it does not turn the run red.
-  full-suite-ios:
-    name: Full iOS suite (informational)
-    runs-on: macos-26
-    timeout-minutes: 45
-    continue-on-error: true
-    steps:
-    - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
-    - uses: maxim-lobanov/setup-xcode@ed7a3b1fda3918c0306d1b724322adc0b8cc0a90  # v1
-      with:
-        xcode-version: '26'
-
-    - name: Full iOS suite (iOS Simulator)
+    # The whole upstream iOS suite, for visibility only (continue-on-error). Timing-sensitive upstream
+    # tests (the feature-flag latency bound, instrumented SwiftUI UI tests, the logger test) fail
+    # intermittently on hosted runners, with or without upstream's retries (two runs of this fork, 4 and 6
+    # failures, none in the opt-out tests), so the step shows what failed without turning the job red.
+    - name: Full iOS suite (informational)
+      continue-on-error: true
       working-directory: MixpanelDemo
       run: |
         set -o pipefail
@@ -72,4 +62,4 @@ jobs:
           -retry-tests-on-failure -test-iterations 3 \
           ONLY_ACTIVE_ARCH=NO \
           ENABLE_TESTABILITY=YES \
-          clean build test | xcbeautify --renderer github-actions
+          test | xcbeautify --renderer github-actions
