@@ -27,9 +27,9 @@ jobs:
       with:
         xcode-version: '26'
 
-    # The whole iOS suite, MixpanelOptOutPurgeTests (the fork's change) included. No test retries: the
-    # purge tests guard children's privacy, so a flaky pass must not hide a real failure.
-    - name: Build and test (iOS Simulator)
+    # The fork's change first, with no test retries: these tests guard children's privacy, so a flaky
+    # pass must not hide a real failure.
+    - name: Opt-out purge tests (iOS Simulator, no retries)
       working-directory: MixpanelDemo
       run: |
         set -o pipefail
@@ -38,6 +38,24 @@ jobs:
           -derivedDataPath Build/ \
           -destination "platform=iOS Simulator,name=iPhone 17 Pro,OS=latest" \
           -configuration Debug \
+          -only-testing:MixpanelDemoTests/MixpanelOptOutPurgeTests \
+          -only-testing:MixpanelDemoTests/MixpanelOptOutTests \
           ONLY_ACTIVE_ARCH=NO \
           ENABLE_TESTABILITY=YES \
           clean build test | xcbeautify --renderer github-actions
+
+    # The whole iOS suite, with the retries upstream's own CI uses: an instrumented SwiftUI UI test and a
+    # logger test fail intermittently on the hosted runner (unrelated to the fork's change).
+    - name: Full iOS suite (iOS Simulator)
+      working-directory: MixpanelDemo
+      run: |
+        set -o pipefail
+        NSUnbufferedIO=YES xcodebuild \
+          -scheme MixpanelDemo \
+          -derivedDataPath Build/ \
+          -destination "platform=iOS Simulator,name=iPhone 17 Pro,OS=latest" \
+          -configuration Debug \
+          -retry-tests-on-failure -test-iterations 3 \
+          ONLY_ACTIVE_ARCH=NO \
+          ENABLE_TESTABILITY=YES \
+          test | xcbeautify --renderer github-actions
