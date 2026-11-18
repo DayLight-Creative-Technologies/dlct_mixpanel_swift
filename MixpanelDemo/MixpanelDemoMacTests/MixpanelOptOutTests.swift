@@ -201,6 +201,10 @@ class MixpanelOptOutTests: MixpanelBaseTests {
     func testOptOutTrackingWillSkipAlias() {
         let testMixpanel = Mixpanel.initialize(token: randomId(), optOutTrackingByDefault: true)
         testMixpanel.optOutTracking()
+        // DLCT fork: createAlias() reads the opted-out status on the calling thread, and the opt-out
+        // runs on trackingQueue. Without this wait the test asked createAlias() before the opt-out had
+        // run, and failed whenever the queue thread was late (seen on a hosted CI runner).
+        waitForTrackingQueue(testMixpanel)
         testMixpanel.createAlias("testAlias", distinctId: "aDistinctId")
         XCTAssertNotEqual(testMixpanel.alias, "testAlias", "When opted out, alias should not be set")
         removeDBfile(testMixpanel)

@@ -38,9 +38,12 @@ because the alternative sends data the person withdrew. Operator-side decision (
   identified, and without a hold (no pre-opt-out record and no `$delete` reaches the stub; an event tracked right after the
   opt-in is sent); a purge after a lost connection; rows left by an interrupted opt-out never sent after the opt-in; an
   opt-in that is not leaving an opted-out state keeps the queue; a failing `DELETE` still empties the store; an opt-in stays
-  opted out when the store can be neither emptied nor removed.
+  opted out when the store can be neither emptied nor removed; the opt-out flag is stored before the purge runs.
 - The three upstream tests that asserted the old behaviour (queued rows survive an opt-out) assert the purge and are named
   for it (`testEventsTrackedBeforeOptOutAreDiscarded`, `testOptOutDiscardsEventQueue`, `testOptOutDiscardsPeopleQueue`).
+- `testOptOutTrackingWillSkipAlias` (upstream) waits for the opt-out before it calls `createAlias()`. `createAlias()` reads the
+  opted-out status on the calling thread while the opt-out runs on `trackingQueue`, so the test asked before the opt-out had
+  run and failed once on a hosted CI runner.
 - `build.yml` fails the gating step when the run executed no tests or none of the purge suite.
 
 ### Repository

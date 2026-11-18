@@ -83,6 +83,34 @@ private class OptOutStubURLProtocol: URLProtocol {
     }
 }
 
+/// Reads the stored opt-out flag at the moment the purge reports that it emptied the store. The purge
+/// runs on the instance's `trackingQueue`, and the logger calls its listeners on the calling thread, so
+/// what is read here is the state the purge ran in.
+private class PurgeOrderProbe: MixpanelLogging {
+    private let lock = NSLock()
+    private let instanceName: String
+    private var flagAtPurge: [Bool?] = []
+
+    init(instanceName: String) {
+        self.instanceName = instanceName
+    }
+
+    func addMessage(message: MixpanelLogMessage) {
+        guard message.text == "Successfully deleted all rows from every table" else { return }
+        let flag = MixpanelPersistence.loadOptOutStatusFlag(instanceName: instanceName)
+        lock.lock()
+        flagAtPurge.append(flag)
+        lock.unlock()
+    }
+
+    /// The stored flag seen by each purge so far, in order (nil: no flag was stored yet).
+    func flagsSeen() -> [Bool?] {
+        lock.lock()
+        defer { lock.unlock() }
+        return flagAtPurge
+    }
+}
+
 class MixpanelOptOutPurgeTests: MixpanelBaseTests {
 
     override func setUp() {
@@ -367,6 +395,27 @@ class MixpanelOptOutPurgeTests: MixpanelBaseTests {
         XCTAssertTrue(
             sentBodies().contains("queued-while-opted-in"),
             "an opt-in that leaves no opted-out state must not discard the queue: \(sentBodies())")
+        removeDBfile(m.apiToken)
+    }
+
+    /// The flag is stored before the purge runs, so an opt-out cut short between the two still reads as
+    /// opted out on the next start and stops sending what the purge had not yet deleted.
+    func testTheOptOutFlagIsStoredBeforeThePurgeRuns() {
+        let m = makeInstance()
+        m.track(event: "pre-optout-event")
+        waitForTrackingQueue(m)
+        let probe = PurgeOrderProbe(instanceName: m.name)
+        MixpanelLogger.addLogging(probe)
+        MixpanelLogger.enableLevel(.info)
+        defer { MixpanelLogger.disableLevel(.info) }
+
+        m.optOutTracking()
+        waitForTrackingQueue(m)
+
+        XCTAssertEqual(
+            probe.flagsSeen().count, 1, "the purge must report once, or this test proves nothing")
+        XCTAssertEqual(
+            probe.flagsSeen().first ?? nil, true, "the opt-out flag must already be stored when the purge runs")
         removeDBfile(m.apiToken)
     }
 
