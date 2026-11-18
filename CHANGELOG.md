@@ -4,6 +4,33 @@ This repository is a fork of [mixpanel/mixpanel-swift](https://github.com/mixpan
 version stays `7.1.0` on purpose: `mixpanel_flutter` 3.2.0 pins `Mixpanel-swift` to exactly `7.1.0`, so a fork that kept
 another version would not resolve. Fork releases are named in this file and identified by commit SHA, not by tag.
 
+## 7.1.0-dlct.3 (2026-11-18)
+
+Corrects 7.1.0-dlct.2, whose purge could not reach a batch a flush had already read into memory.
+
+### Fixes
+
+- A batch read before an opt-out is never sent, retried or acknowledged after it. dlct.2 emptied the store at the opt-out,
+  but a flush that had already read a batch held it in memory: `sendBatch` re-checked only the current opt-out flag, which
+  an `optInTracking()` made right after the opt-out had already cleared, so the pre-opt-out records were sent; and the
+  backup-host retry (`FlushRequest`) sent the same batch again after the primary host failed, with no opt-out check at all,
+  so they could leave after an opt-out with no opt-in. Separately, when the purge removed the database file, the new store's
+  row ids restart at 1, and the in-flight batch's success deleted the rows tracked after the opt-in by those ids.
+- The cause: nothing tied a batch to the opt-out state it was read under. `MixpanelInstance` now counts opt-outs
+  (`optOutGeneration`, incremented by `optOutTracking()` in the same block as the flag and the purge, read under
+  `readWriteLock`). `flushNextBatch` records the count with the batch it reads. A batch whose count is no longer current is
+  dropped without being sent in `sendBatch`, without a backup-host retry in `FlushRequest.flushRequestHandler`, and without
+  touching the store in the flush loop's bookkeeping (no row deleted by id, none kept); the flush then reads the next batch
+  under the current state.
+- A request already on the wire when the opt-out runs cannot be recalled. It was sent while the person was still opted in.
+
+### Tests
+
+- `MixpanelOptOutPurgeTests`: a batch read before back-to-back `optOutTracking()` and `optInTracking()` is never sent; a
+  batch read before a purge that removes the database file never deletes the rows tracked after the opt-in (batch not yet
+  sent, and batch on the wire when the opt-out runs); the backup host is not sent a batch whose primary attempt failed
+  after an opt-out. The stub server can hold a primary-host request in flight, to run an opt-out while it is on the wire.
+
 ## 7.1.0-dlct.2 (2026-11-18)
 
 Corrects 7.1.0-dlct.1, whose purge was queued as a later block and could be overtaken or skipped.

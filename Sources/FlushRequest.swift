@@ -25,7 +25,8 @@ class FlushRequest: Network {
         useIP: Bool,
         headers: [String: String],
         queryItems: [URLQueryItem] = [],
-        useGzipCompression: Bool
+        useGzipCompression: Bool,
+        isCurrent: @escaping () -> Bool
     ) -> Bool {
 
         let responseParser: (Data) -> Int? = { data in
@@ -66,6 +67,7 @@ class FlushRequest: Network {
         flushRequestHandler(
             serverURL,
             resource: resource,
+            isCurrent: isCurrent,
             completion: { success in
                 result = success
                 semaphore.signal()
@@ -77,12 +79,21 @@ class FlushRequest: Network {
     private func flushRequestHandler(
         _ base: String,
         resource: Resource<Int>,
+        isCurrent: @escaping () -> Bool,
         completion: @escaping (Bool) -> Void
     ) {
 
         Network.apiRequest(
             base: base, resource: resource,
             failure: { (reason, _, response) in
+                // DLCT fork: the batch was read before an opt-out that has since run. The failure of
+                // the first attempt is no reason to send it again to another host.
+                guard isCurrent() else {
+                    MixpanelLogger.info(
+                        message: "Opt-out ran while \(resource.path) was in flight; dropping the failed batch")
+                    completion(false)
+                    return
+                }
                 // On a failure to the primary host, fall back to the configured backup host (if any)
                 // before giving up. The backup is attempted when the primary couldn't be reached or
                 // returned a non-4xx error — never for client errors (4xx), where a different host

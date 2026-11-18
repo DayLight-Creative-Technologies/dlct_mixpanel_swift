@@ -15,18 +15,47 @@ import XCTest
 /// 200 "1", so a flush against it succeeds without touching the network.
 private class OptOutStubURLProtocol: URLProtocol {
     struct Recorded {
+        let host: String
         let path: String
         let body: String
     }
 
+    /// A primary-host request held in flight: `started` is signalled when it reaches the stub, and the
+    /// stub answers with `status` once the test signals `release`.
+    struct Hold {
+        let started = DispatchSemaphore(value: 0)
+        let release = DispatchSemaphore(value: 0)
+        let status: Int
+    }
+
     static let host = "optout-purge-stub.mixpanel.test"
+    static let backupHost = "optout-purge-backup.mixpanel.test"
     private static let lock = NSLock()
     private static var recorded: [Recorded] = []
+    private static var pendingHold: Hold?
 
     static func reset() {
         lock.lock()
         recorded = []
+        pendingHold = nil
         lock.unlock()
+    }
+
+    /// Holds the next request to the primary host in flight until the test releases it.
+    static func holdNextPrimaryRequest(status: Int) -> Hold {
+        let hold = Hold(status: status)
+        lock.lock()
+        pendingHold = hold
+        lock.unlock()
+        return hold
+    }
+
+    private static func takeHold() -> Hold? {
+        lock.lock()
+        defer { lock.unlock() }
+        let hold = pendingHold
+        pendingHold = nil
+        return hold
     }
 
     static func requests() -> [Recorded] {
@@ -42,7 +71,7 @@ private class OptOutStubURLProtocol: URLProtocol {
     }
 
     override class func canInit(with request: URLRequest) -> Bool {
-        return request.url?.host == host
+        return request.url?.host == host || request.url?.host == backupHost
     }
 
     override class func canonicalRequest(for request: URLRequest) -> URLRequest {
@@ -54,11 +83,25 @@ private class OptOutStubURLProtocol: URLProtocol {
             client?.urlProtocol(self, didFailWithError: URLError(.badURL))
             return
         }
-        OptOutStubURLProtocol.record(Recorded(path: url.path, body: bodyString()))
+        let recorded = Recorded(host: url.host ?? "", path: url.path, body: bodyString())
+        guard url.host == OptOutStubURLProtocol.host, let hold = OptOutStubURLProtocol.takeHold() else {
+            OptOutStubURLProtocol.record(recorded)
+            respond(to: url, status: 200)
+            return
+        }
+        hold.started.signal()
+        DispatchQueue.global().async {
+            hold.release.wait()
+            OptOutStubURLProtocol.record(recorded)
+            self.respond(to: url, status: hold.status)
+        }
+    }
+
+    private func respond(to url: URL, status: Int) {
         let response = HTTPURLResponse(
-            url: url, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: nil)!
+            url: url, statusCode: status, httpVersion: "HTTP/1.1", headerFields: nil)!
         client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
-        client?.urlProtocol(self, didLoad: "1".data(using: .utf8)!)
+        client?.urlProtocol(self, didLoad: (status == 200 ? "1" : "0").data(using: .utf8)!)
         client?.urlProtocolDidFinishLoading(self)
     }
 
@@ -472,5 +515,131 @@ class MixpanelOptOutPurgeTests: MixpanelBaseTests {
         m.track(event: "post-optin-event")
         flushAndWaitForTrackingQueue(m)
         XCTAssertEqual(OptOutStubURLProtocol.requests().count, 0)
+    }
+
+    // MARK: - A batch already read when the opt-out runs
+
+    /// An unsent batch a flush read into memory is out of the purge's reach. Nothing tracked before an
+    /// opt-out may be sent after it, whether or not the person opted back in straight away.
+    func testBatchReadBeforeBackToBackOptOutAndOptInIsNeverSent() {
+        let m = makeInstance()
+        m.track(event: "pre-optout-inflight")
+        waitForTrackingQueue(m)
+        // The flush reads its batch on the tracking queue and is then stuck behind this block.
+        let networkGate = DispatchSemaphore(value: 0)
+        m.networkQueue.async { networkGate.wait() }
+        m.flush()
+        m.trackingQueue.sync {}
+
+        m.optOutTracking()
+        m.optInTracking()
+        m.trackingQueue.sync {}
+        networkGate.signal()
+        waitForTrackingQueue(m)
+        waitForTrackingQueue(m)
+
+        XCTAssertFalse(
+            sentBodies().contains("pre-optout-inflight"),
+            "a batch read before the opt-out must not be sent after it: \(sentBodies().prefix(300))")
+        removeDBfile(m.apiToken)
+    }
+
+    /// When the purge removes the database file, the new store's ids restart at 1. The result of the batch
+    /// read before the opt-out must not delete rows by those ids.
+    func testBatchReadBeforeAFileFallbackPurgeNeverDeletesRowsTrackedAfterTheOptIn() {
+        let m = makeInstance()
+        for name in ["pre-optout-a", "pre-optout-b", "pre-optout-c"] { m.track(event: name) }
+        waitForTrackingQueue(m)
+        let networkGate = DispatchSemaphore(value: 0)
+        m.networkQueue.async { networkGate.wait() }
+        m.flush()
+        m.trackingQueue.sync {}
+        makePurgeFallBackToRemovingTheDatabaseFile(m)
+
+        m.optOutTracking()
+        m.optInTracking()
+        m.track(event: "post-optin-victim")
+        m.trackingQueue.sync {}
+        networkGate.signal()
+        waitForTrackingQueue(m)
+        waitForTrackingQueue(m)
+        XCTAssertFalse(
+            sentBodies().contains("pre-optout"),
+            "nothing tracked before the opt-out may be sent: \(sentBodies().prefix(300))")
+
+        flushAndWaitForTrackingQueue(m)
+        let sent = sentBodies()
+        XCTAssertTrue(
+            sent.contains("post-optin-victim"),
+            "an event tracked after the opt-in was deleted: \(sent.prefix(300))")
+        XCTAssertTrue(sent.contains("$opt_in"), "the opt-in event was deleted: \(sent.prefix(300))")
+        removeDBfile(m.apiToken)
+    }
+
+    /// The request was already on the wire when the opt-out ran, and then succeeded. Its success must not
+    /// delete rows by id either: here the purge restarted the ids, and a check made only before the send
+    /// would not see the opt-out.
+    func testBatchSentWhileAFileFallbackPurgeRunsNeverDeletesRowsTrackedAfterTheOptIn() {
+        let m = makeInstance()
+        for name in ["pre-optout-a", "pre-optout-b", "pre-optout-c"] { m.track(event: name) }
+        waitForTrackingQueue(m)
+        let hold = OptOutStubURLProtocol.holdNextPrimaryRequest(status: 200)
+        m.flush()
+        XCTAssertEqual(hold.started.wait(timeout: .now() + 30), .success, "the flush never sent its batch")
+        makePurgeFallBackToRemovingTheDatabaseFile(m)
+
+        m.optOutTracking()
+        m.optInTracking()
+        m.track(event: "post-optin-victim")
+        m.trackingQueue.sync {}
+        hold.release.signal()
+        waitForTrackingQueue(m)
+        waitForTrackingQueue(m)
+
+        flushAndWaitForTrackingQueue(m)
+        let sent = sentBodies()
+        XCTAssertTrue(
+            sent.contains("post-optin-victim"),
+            "an event tracked after the opt-in was deleted: \(sent.prefix(300))")
+        XCTAssertTrue(sent.contains("$opt_in"), "the opt-in event was deleted: \(sent.prefix(300))")
+        removeDBfile(m.apiToken)
+    }
+
+    /// The first attempt was on the wire when the opt-out ran, and failed. The backup host must not get
+    /// the batch, with no opt-in at all.
+    func testBackupHostIsNotSentABatchWhoseFirstAttemptFailedAfterAnOptOut() {
+        let m = makeInstance()
+        m.backupHost = OptOutStubURLProtocol.backupHost
+        m.track(event: "pre-optout-backup")
+        waitForTrackingQueue(m)
+        let hold = OptOutStubURLProtocol.holdNextPrimaryRequest(status: 500)
+        m.flush()
+        XCTAssertEqual(hold.started.wait(timeout: .now() + 30), .success, "the flush never sent its batch")
+
+        m.optOutTracking()
+        m.trackingQueue.sync {}
+        XCTAssertTrue(m.hasOptedOutTracking(), "precondition: the opt-out has run")
+        hold.release.signal()
+        waitForTrackingQueue(m)
+        waitForTrackingQueue(m)
+
+        let requests = OptOutStubURLProtocol.requests()
+        XCTAssertEqual(
+            requests.filter { $0.host == OptOutStubURLProtocol.host }.count, 1,
+            "precondition: the primary attempt reached the stub and failed")
+        XCTAssertEqual(
+            requests.filter { $0.host == OptOutStubURLProtocol.backupHost }.count, 0,
+            "the backup host was sent a batch read before the opt-out: \(sentBodies().prefix(300))")
+        removeDBfile(m.apiToken)
+    }
+
+    /// Drops a table through a second connection, so the purge's single DELETE fails and the purge removes
+    /// the database file instead.
+    private func makePurgeFallBackToRemovingTheDatabaseFile(_ m: MixpanelInstance) {
+        var other: OpaquePointer?
+        XCTAssertEqual(sqlite3_open(dbFilePath(m.apiToken), &other), SQLITE_OK)
+        XCTAssertEqual(
+            sqlite3_exec(other, "DROP TABLE mixpanel_\(m.apiToken)_groups", nil, nil, nil), SQLITE_OK)
+        sqlite3_close(other)
     }
 }

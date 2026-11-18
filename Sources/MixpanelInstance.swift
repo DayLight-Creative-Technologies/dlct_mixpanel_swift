@@ -357,6 +357,10 @@ open class MixpanelInstance: CustomDebugStringConvertible, FlushDelegate, AEDele
     private var pendingFlushCompletion: (() -> Void)?
 
     var optOutStatus: Bool?
+    // DLCT fork: counts the opt-outs this instance has run. A flush records it with the batch it reads,
+    // and a batch whose generation is no longer current was read before an opt-out and is dropped.
+    // Guarded by `readWriteLock`, written only by `optOutTracking()` on `trackingQueue`.
+    var optOutGeneration = 0
     var useUniqueDistinctId: Bool
     var timedEvents = InternalProperties()
 
@@ -1380,6 +1384,7 @@ extension MixpanelInstance {
         }
         let ids: [Int32] = batch.map { ($0["id"] as? Int32) ?? 0 }
         let isLastBatch = batch.count < batchSize
+        let generation = currentOptOutGeneration()
 
         networkQueue.async { [weak self] in
             guard let self = self else {
@@ -1388,12 +1393,19 @@ extension MixpanelInstance {
                 }
                 return
             }
-            let result = self.sendBatch(batch, type: type)
+            let result = self.sendBatch(batch, type: type, generation: generation)
             self.trackingQueue.async { [weak self] in
                 guard let self = self else {
                     if let completion = completion {
                         DispatchQueue.main.async(execute: completion)
                     }
+                    return
+                }
+                // DLCT fork: an opt-out ran since this batch was read. Its rows were purged and the
+                // store may have restarted its ids, so the result of sending it must not delete or keep
+                // any row by id. Read the next batch under the current state instead.
+                guard generation == self.currentOptOutGeneration() else {
+                    self.flushNextBatch(types, completion: completion)
                     return
                 }
                 switch result {
@@ -1425,15 +1437,26 @@ extension MixpanelInstance {
     }
 
     /// Must be called on `networkQueue`.
-    func sendBatch(_ batch: Queue, type: FlushType) -> FlushBatchResult {
-        if hasOptedOutTracking() {
+    func sendBatch(_ batch: Queue, type: FlushType, generation: Int) -> FlushBatchResult {
+        if hasOptedOutTracking() || generation != currentOptOutGeneration() {
             return .notAllowed
         }
         let proxyServerResource = proxyServerDelegate?.mixpanelResourceForProxyServer(name)
         let headers: [String: String] = proxyServerResource?.headers ?? [:]
         let queryItems = proxyServerResource?.queryItems ?? []
 
-        return flushInstance.sendBatch(batch, type: type, headers: headers, queryItems: queryItems)
+        return flushInstance.sendBatch(
+            batch, type: type, headers: headers, queryItems: queryItems,
+            isCurrent: { [weak self] in self?.currentOptOutGeneration() == generation })
+    }
+
+    /// Safe to call from any queue.
+    private func currentOptOutGeneration() -> Int {
+        var generation = 0
+        readWriteLock.read {
+            generation = optOutGeneration
+        }
+        return generation
     }
 }
 
@@ -1925,6 +1948,7 @@ extension MixpanelInstance {
             self.archive()
             self.readWriteLock.write {
                 self.optOutStatus = true
+                self.optOutGeneration += 1
             }
             self.readWriteLock.read {
                 MixpanelPersistence.saveOptOutStatusFlag(value: self.optOutStatus!, instanceName: self.name)

@@ -116,7 +116,8 @@ class Flush: AppLifecycle {
     /// Sends a single batch synchronously and reports the outcome. Deleting rows is left to the
     /// caller, which owns database access.
     func sendBatch(
-        _ batch: Queue, type: FlushType, headers: [String: String], queryItems: [URLQueryItem]
+        _ batch: Queue, type: FlushType, headers: [String: String], queryItems: [URLQueryItem],
+        isCurrent: @escaping () -> Bool
     ) -> FlushBatchResult {
         if flushRequest.requestNotAllowed() {
             return .notAllowed
@@ -138,7 +139,7 @@ class Flush: AppLifecycle {
             type: type,
             useIP: useIPAddressForGeoLocation,
             headers: headers,
-            queryItems: queryItems, useGzipCompression: useGzipCompression)
+            queryItems: queryItems, useGzipCompression: useGzipCompression, isCurrent: isCurrent)
         #if os(iOS)
         if !MixpanelInstance.isiOSAppExtension() {
             delegate?.updateNetworkActivityIndicator(false)
