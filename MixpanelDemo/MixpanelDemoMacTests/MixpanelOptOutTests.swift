@@ -263,7 +263,7 @@ class MixpanelOptOutTests: MixpanelBaseTests {
         removeDBfile(testMixpanel)
     }
 
-    func testOptOutWillSkipFlushPeople() {
+    func testOptOutDiscardsPeopleQueue() {
         let testMixpanel = Mixpanel.initialize(token: randomId(), optOutTrackingByDefault: true)
         waitForTrackingQueue(testMixpanel)
         testMixpanel.optInTracking()
@@ -289,7 +289,7 @@ class MixpanelOptOutTests: MixpanelBaseTests {
         removeDBfile(testMixpanel)
     }
 
-    func testOptOutWillSkipFlushEvent() {
+    func testOptOutDiscardsEventQueue() {
         let testMixpanel = Mixpanel.initialize(token: randomId(), optOutTrackingByDefault: true)
         testMixpanel.optInTracking()
         testMixpanel.identify(distinctId: "d1")

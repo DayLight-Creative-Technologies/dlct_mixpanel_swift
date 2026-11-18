@@ -6,6 +6,7 @@
 //  must never reach the server, not even after a later `optInTracking()` and a flush.
 //
 
+import SQLite3
 import XCTest
 
 @testable import Mixpanel
@@ -227,5 +228,200 @@ class MixpanelOptOutPurgeTests: MixpanelBaseTests {
         XCTAssertEqual(
             eventQueue(token: testMixpanel.apiToken).count, 1, "the row is kept, not sent or deleted")
         removeDBfile(testMixpanel.apiToken)
+    }
+
+    // MARK: - Back to back: the opt-out's purge runs before anything queued after it
+
+    /// Holds `trackingQueue` busy so every call made while it is held is queued behind the same
+    /// blocker: the interleaving a caller gets when it opts out and in with no wait between them.
+    private func holdingTrackingQueue(_ m: MixpanelInstance, _ calls: () -> Void) {
+        let gate = DispatchSemaphore(value: 0)
+        m.trackingQueue.async { gate.wait() }
+        calls()
+        gate.signal()
+        waitForTrackingQueue(m)
+        waitForAsyncTasks()
+        waitForTrackingQueue(m)
+    }
+
+    func testBackToBackOptOutOptInAnonymousSendsNothingFromBeforeTheOptOut() {
+        let m = makeInstance()
+        for i in 0..<3 {
+            m.track(event: "pre-optout-event-\(i)")
+        }
+        waitForTrackingQueue(m)
+        XCTAssertEqual(rowCount(m.apiToken, table: "events"), 3, "precondition: the events are queued")
+
+        holdingTrackingQueue(m) {
+            m.optOutTracking()
+            m.flush()
+            m.optInTracking()
+            m.track(event: "post-optin-event")
+        }
+        flushAndWaitForTrackingQueue(m)
+
+        let sent = sentBodies()
+        XCTAssertTrue(
+            sent.contains("post-optin-event"), "an event tracked right after the opt-in must be sent: \(sent)")
+        XCTAssertFalse(sent.contains("pre-optout"), "nothing tracked before the opt-out may be sent: \(sent)")
+        removeDBfile(m.apiToken)
+    }
+
+    func testBackToBackOptOutOptInIdentifiedSendsNothingFromBeforeTheOptOut() {
+        let m = makeInstance()
+        m.identify(distinctId: "pre-optout-account")
+        for i in 0..<3 {
+            m.track(event: "pre-optout-event-\(i)")
+        }
+        m.people.set(property: "pre-optout-people-property", to: "pre-optout-value")
+        m.getGroup(groupKey: "team", groupID: "pre-optout-team").set(
+            property: "pre-optout-group-property", to: "pre-optout-value")
+        waitForTrackingQueue(m)
+        XCTAssertFalse(peopleQueue(token: m.apiToken).isEmpty, "precondition: a people update is queued")
+
+        holdingTrackingQueue(m) {
+            m.optOutTracking()
+            m.optInTracking()
+            m.identify(distinctId: "post-optin-account")
+            m.track(event: "post-optin-event")
+        }
+        flushAndWaitForTrackingQueue(m)
+
+        let sent = sentBodies()
+        XCTAssertTrue(
+            sent.contains("post-optin-event"), "an event tracked right after the opt-in must be sent: \(sent)")
+        XCTAssertFalse(sent.contains("pre-optout"), "no record from before the opt-out may be sent: \(sent)")
+        XCTAssertFalse(
+            sent.contains("$delete"),
+            "the opt-out must not leave a $delete to be stamped onto the next id: \(sent)")
+        removeDBfile(m.apiToken)
+    }
+
+    /// The same calls with no artificial hold, repeated, so the natural interleaving is covered too.
+    func testBackToBackOptOutOptInWithoutAHoldNeverSendsFromBeforeTheOptOut() {
+        for _ in 0..<10 {
+            OptOutStubURLProtocol.reset()
+            let m = makeInstance()
+            m.identify(distinctId: "pre-optout-account")
+            m.track(event: "pre-optout-event")
+            m.optOutTracking()
+            m.optInTracking()
+            m.track(event: "post-optin-event")
+            flushAndWaitForTrackingQueue(m)
+            let sent = sentBodies()
+            XCTAssertTrue(sent.contains("post-optin-event"), "the post-opt-in event must be sent: \(sent)")
+            XCTAssertFalse(sent.contains("pre-optout"), "a pre-opt-out event was sent: \(sent)")
+            removeDBfile(m.apiToken)
+        }
+    }
+
+    // MARK: - A purge that cannot be skipped, and an opt-in that cannot send what an opt-out left
+
+    func testPurgeRunsWhenTheConnectionWasLost() {
+        let m = makeInstance()
+        for i in 0..<3 {
+            m.track(event: "pre-optout-event-\(i)")
+        }
+        m.people.set(property: "pre-optout-people-property", to: "pre-optout-value")
+        waitForTrackingQueue(m)
+        m.trackingQueue.sync { m.mixpanelPersistence.closeDB() }
+
+        m.optOutTracking()
+        waitForTrackingQueue(m)
+
+        assertQueuesEmpty(m.apiToken)
+        removeDBfile(m.apiToken)
+    }
+
+    func testRowsLeftByAnInterruptedOptOutAreNeverSentAfterOptIn() {
+        let token = randomId()
+        MixpanelPersistence.saveOptOutStatusFlag(value: true, instanceName: token)
+        let leftBehind = MixpanelPersistence(instanceName: token)
+        leftBehind.saveEntity(
+            ["event": "pre-optout-left-behind", "properties": ["token": token]], type: .events)
+        leftBehind.closeDB()
+        let m = Mixpanel.initialize(token: token, trackAutomaticEvents: false, flushInterval: 60)
+        waitForTrackingQueue(m)
+        m.serverURL = "https://\(OptOutStubURLProtocol.host)"
+        XCTAssertTrue(m.hasOptedOutTracking(), "precondition: the stored opt-out flag is read at init")
+
+        m.optInTracking()
+        waitForTrackingQueue(m)
+        m.track(event: "post-optin-event")
+        flushAndWaitForTrackingQueue(m)
+
+        XCTAssertTrue(sentBodies().contains("post-optin-event"))
+        XCTAssertFalse(sentBodies().contains("pre-optout"), "a row left by an interrupted opt-out was sent")
+        removeDBfile(token)
+    }
+
+    func testOptInWhenNotOptedOutKeepsTheQueue() {
+        let m = makeInstance()
+        m.track(event: "queued-while-opted-in")
+        waitForTrackingQueue(m)
+
+        m.optInTracking()
+        waitForTrackingQueue(m)
+        flushAndWaitForTrackingQueue(m)
+
+        XCTAssertTrue(
+            sentBodies().contains("queued-while-opted-in"),
+            "an opt-in that leaves no opted-out state must not discard the queue: \(sentBodies())")
+        removeDBfile(m.apiToken)
+    }
+
+    func testPurgeDeletesTheStoreWhenADeleteFails() {
+        let m = makeInstance()
+        m.people.set(property: "pre-optout-people-property", to: "pre-optout-value")
+        waitForTrackingQueue(m)
+        XCTAssertEqual(rowCount(m.apiToken, table: "people"), 1, "precondition: a people row is queued")
+
+        // Make the purge's first statement fail: drop the events table behind the SDK's back.
+        var other: OpaquePointer?
+        XCTAssertEqual(sqlite3_open(dbFilePath(m.apiToken), &other), SQLITE_OK)
+        XCTAssertEqual(
+            sqlite3_exec(other, "DROP TABLE mixpanel_\(m.apiToken)_events", nil, nil, nil), SQLITE_OK)
+        sqlite3_close(other)
+
+        m.optOutTracking()
+        waitForTrackingQueue(m)
+        assertQueuesEmpty(m.apiToken)  // also proves the three tables exist again
+
+        m.optInTracking()
+        waitForTrackingQueue(m)
+        m.track(event: "post-optin-event")
+        flushAndWaitForTrackingQueue(m)
+        XCTAssertTrue(sentBodies().contains("post-optin-event"))
+        XCTAssertFalse(sentBodies().contains("pre-optout"))
+        removeDBfile(m.apiToken)
+    }
+
+    func testOptInStaysOptedOutWhenTheQueueCannotBeDiscarded() throws {
+        let m = makeInstance()
+        m.optOutTracking()
+        waitForTrackingQueue(m)
+
+        // A store that can be neither opened nor deleted: an undeletable directory at its path.
+        m.trackingQueue.sync { m.mixpanelPersistence.closeDB() }
+        let path = dbFilePath(m.apiToken)
+        let manager = FileManager.default
+        try manager.removeItem(atPath: path)
+        try manager.createDirectory(atPath: path, withIntermediateDirectories: false)
+        try manager.setAttributes([.immutable: true], ofItemAtPath: path)
+        defer {
+            try? manager.setAttributes([.immutable: false], ofItemAtPath: path)
+            try? manager.removeItem(atPath: path)
+        }
+
+        m.optInTracking()
+        waitForTrackingQueue(m)
+        XCTAssertTrue(
+            m.hasOptedOutTracking(), "an opt-in that can't discard the old queue must not take effect")
+        XCTAssertEqual(
+            MixpanelPersistence.loadOptOutStatusFlag(instanceName: m.name), true,
+            "the stored choice must still read opted out")
+        m.track(event: "post-optin-event")
+        flushAndWaitForTrackingQueue(m)
+        XCTAssertEqual(OptOutStubURLProtocol.requests().count, 0)
     }
 }

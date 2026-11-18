@@ -1907,11 +1907,6 @@ extension MixpanelInstance {
     public func optOutTracking() {
         trackingQueue.async { [weak self] in
             guard let self = self else { return }
-            if self.people.distinctId != nil {
-                self.people.deleteUser()
-                self.people.clearCharges()
-                self.flush()
-            }
             self.readWriteLock.write { [weak self] in
                 guard let self = self else {
                     return
@@ -1935,6 +1930,14 @@ extension MixpanelInstance {
                 MixpanelPersistence.saveOptOutStatusFlag(value: self.optOutStatus!, instanceName: self.name)
             }
 
+            // DLCT fork: discard the unsent queue here, in the block that marks the instance opted
+            // out, so no block queued after the opt-out (an optInTracking(), a track(), a flush())
+            // can run before the purge or be purged by it. Upstream's deleteUser(), clearCharges()
+            // and flush() are gone from the opt-out: they queued rows and a flush behind this
+            // block. The flag is saved first, so an opt-out cut short still stops sending; if the
+            // purge can't run now, optInTracking() runs it before it lets anything be sent.
+            self.mixpanelPersistence.removeAllEntities()
+
             // Identity just changed (distinctId was regenerated above). Clear in-memory feature
             // flag state and the on-disk cache from the prior identity so subsequent lookups
             // don't serve stale variants. Mirrors `identify()` and `setContext()`. We deliberately
@@ -1948,15 +1951,6 @@ extension MixpanelInstance {
             #if os(iOS) && !targetEnvironment(macCatalyst)
             self.autocaptureManager?.stop()
             #endif
-
-            // DLCT fork: purge the unsent queue. Queued after the `$delete` and `$set` (clearCharges)
-            // rows scheduled above, so those unidentified rows go too, and the flush scheduled above
-            // stops at the opted-out guard. Without this a later optInTracking() would send
-            // everything tracked before the opt-out (the 6.8.0 release notes promise this method
-            // purges queued data).
-            self.trackingQueue.async { [weak self] in
-                self?.mixpanelPersistence.removeAllEntities()
-            }
         }
     }
 
@@ -1975,6 +1969,17 @@ extension MixpanelInstance {
     public func optInTracking(distinctId: String? = nil, properties: Properties? = nil) {
         trackingQueue.async { [weak self] in
             guard let self = self else { return }
+            // DLCT fork: leaving an opted-out state. Anything still queued was queued before or
+            // during the opt-out (an opt-out cut short before its purge, a purge the store
+            // refused, rows from an SDK version whose opt-out did not purge), so it is discarded
+            // before the flag changes. If the store can't confirm it is empty, stay opted out.
+            if self.hasOptedOutTracking() && !self.mixpanelPersistence.removeAllEntities() {
+                MixpanelLogger.error(
+                    message:
+                        "optInTracking: the queue from before the opt-out could not be discarded; staying opted out"
+                )
+                return
+            }
             self.readWriteLock.write {
                 self.optOutStatus = false
             }

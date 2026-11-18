@@ -29,7 +29,7 @@ jobs:
 
     # The fork's change, with no test retries: these tests guard children's privacy, so a flaky pass must
     # not hide a real failure. MixpanelOptOutPurgeTests is the new suite; MixpanelOptOutTests holds the
-    # existing opt-out behaviour (two of its tests were updated for the purge).
+    # existing opt-out behaviour (three of its tests were updated for the purge).
     - name: Opt-out tests (iOS Simulator)
       working-directory: MixpanelDemo
       run: |
@@ -41,9 +41,18 @@ jobs:
           -configuration Debug \
           -only-testing:MixpanelDemoTests/MixpanelOptOutPurgeTests \
           -only-testing:MixpanelDemoTests/MixpanelOptOutTests \
+          -resultBundlePath "$RUNNER_TEMP/optout.xcresult" \
           ONLY_ACTIVE_ARCH=NO \
           ENABLE_TESTABILITY=YES \
           clean build test | xcbeautify --renderer github-actions
+
+    # xcodebuild exits 0 when an -only-testing selector matches nothing (a renamed or deleted class), so a
+    # green step above does not show the tests ran. Fail unless both classes executed tests and none failed
+    # or was skipped.
+    - name: Opt-out tests ran (not zero)
+      run: |
+        python3 .github/scripts/assert_tests_ran.py "$RUNNER_TEMP/optout.xcresult" \
+          MixpanelOptOutPurgeTests MixpanelOptOutTests
 
     # The whole upstream iOS suite, for visibility only (continue-on-error). Timing-sensitive upstream
     # tests (the feature-flag latency bound, instrumented SwiftUI UI tests, the logger test) fail

@@ -4,6 +4,51 @@ This repository is a fork of [mixpanel/mixpanel-swift](https://github.com/mixpan
 version stays `7.1.0` on purpose: `mixpanel_flutter` 3.2.0 pins `Mixpanel-swift` to exactly `7.1.0`, so a fork that kept
 another version would not resolve. Fork releases are named in this file and identified by commit SHA, not by tag.
 
+## 7.1.0-dlct.2 (2026-11-18)
+
+Corrects 7.1.0-dlct.1, whose purge was queued as a later block and could be overtaken or skipped.
+
+### Fixes
+
+- `optOutTracking()` purges inside its own `trackingQueue` block, right after it marks the instance opted out and saves the
+  flag. In dlct.1 the purge was a separate block queued at the end of the opt-out, so a block queued after the opt-out ran
+  before it: an `optInTracking()` made right after the opt-out re-enabled sending before the purge ran (the opt-out's own
+  `flush()` then sent the pre-opt-out rows of an identified user), and an event tracked right after the opt-in was deleted
+  by the late purge. The opt-out's upstream `deleteUser()`, `clearCharges()` and `flush()` calls are removed: they queued a
+  `$delete`, a `$set` and a flush behind the opt-out, and the purge makes them pointless. Nothing is sent at the opt-out.
+- The purge can no longer be skipped. Every other `MPDB` operation drops its work when the connection is nil (it reconnects
+  and returns), so a purge built from them skipped a table on a lost connection and left its rows to be sent after a later
+  opt-in. New `MPDB.deleteAllRows()` opens a connection when there is none, deletes every table in one `sqlite3_exec`, and
+  when SQLite cannot delete the rows removes the database file and its `-wal` and `-shm` files instead.
+  `MixpanelPersistence.removeAllEntities()` now returns whether the store is confirmed empty.
+- `optInTracking()` purges again when it leaves an opted-out state, before the flag changes. Rows left by an opt-out that was
+  cut short, by a purge the store refused, or by an SDK version whose opt-out did not purge (upstream 7.1.0) are never sent.
+  An opt-in from a state that is not opted out purges nothing.
+
+### Decision: fail-closed opt-in
+
+If the store cannot be confirmed empty when `optInTracking()` leaves an opted-out state (the rows could not be deleted and
+the database files could not be removed), the instance stays opted out: the opt-in is logged and does nothing, and the stored
+choice still reads opted out. An opt-in that silently does not happen on a device with broken storage is the cost, accepted
+because the alternative sends data the person withdrew. Operator-side decision (SocialScoreKeeper, 2026-11-18).
+
+### Tests
+
+- `MixpanelOptOutPurgeTests`: back-to-back `optOutTracking()` and `optInTracking()` with no wait between them, anonymous and
+  identified, and without a hold (no pre-opt-out record and no `$delete` reaches the stub; an event tracked right after the
+  opt-in is sent); a purge after a lost connection; rows left by an interrupted opt-out never sent after the opt-in; an
+  opt-in that is not leaving an opted-out state keeps the queue; a failing `DELETE` still empties the store; an opt-in stays
+  opted out when the store can be neither emptied nor removed.
+- The three upstream tests that asserted the old behaviour (queued rows survive an opt-out) assert the purge and are named
+  for it (`testEventsTrackedBeforeOptOutAreDiscarded`, `testOptOutDiscardsEventQueue`, `testOptOutDiscardsPeopleQueue`).
+- `build.yml` fails the gating step when the run executed no tests or none of the purge suite.
+
+### Repository
+
+- The workflows inherited from upstream (`ci.yml`, `pr-checks.yml`, `prepare-release.yml`, `release-cocoapod.yml`,
+  `release-spm.yml`) are removed: they publish to upstream's CocoaPods trunk and release channel, which this fork never
+  uses, and none could run here. `build.yml` is the only workflow.
+
 ## 7.1.0-dlct.1 (2026-11-18)
 
 ### Fixes
@@ -52,11 +97,13 @@ Body:
 > is withdrawn. Data collected before the withdrawal must not be sent by a later opt-in. The Android SDK (8.12.0) empties its
 > queue on opt-out.
 >
-> **Suggested fix:** in `optOutTracking()`, after the inserts the opt-out schedules, queue a block on `trackingQueue` that
-> deletes all rows of every `PersistenceType` with `MPDB.deleteRows(_:isDeleteAll: true)`. Our fork's change is small
-> (`MixpanelInstance.swift` and `MixpanelPersistence.swift`), with XCTests against a stub server (`MixpanelOptOutPurgeTests`),
-> and updates the existing tests that asserted the queue survives an opt-out. Happy to open a PR if you want the behaviour
-> upstream.
+> **Suggested fix:** in `optOutTracking()`, right after the block sets and saves the opted-out flag, delete every row of every
+> `PersistenceType` inside that same block (not in a block queued after it: an `optInTracking()` queued right after the
+> opt-out would run first), and drop the `deleteUser()`, `clearCharges()` and `flush()` calls, which only queue a `$delete`, a
+> `$set` and a flush behind it. The delete has to open a connection when there is none, because every other `MPDB`
+> operation drops its work on a nil connection. Our fork's change (7.1.0-dlct.2) is small (`MixpanelInstance.swift`,
+> `MixpanelPersistence.swift`, `MPDB.swift`), with XCTests against a stub server (`MixpanelOptOutPurgeTests`), and updates the
+> existing tests that asserted the queue survives an opt-out. Happy to open a PR if you want the behaviour upstream.
 
 ---
 

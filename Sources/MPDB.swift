@@ -224,6 +224,55 @@ class MPDB {
         }
     }
 
+    /// Empties every table, for `optOutTracking()` and for `optInTracking()` leaving an opted-out
+    /// state. Returns true only when the store is known to hold no rows afterwards. Every other
+    /// operation drops its work when there is no connection (it reconnects and returns); a purge
+    /// that did that would leave rows to be sent after a later opt-in. So this one opens a
+    /// connection first, and when the rows can't be deleted through SQLite it deletes the database
+    /// files instead.
+    @discardableResult
+    func deleteAllRows() -> Bool {
+        if connection == nil {
+            reconnect()
+        }
+        if let db = connection {
+            let deleteString = PersistenceType.allCases
+                .map { "DELETE FROM \(tableNameFor($0));" }.joined()
+            // sqlite3_exec finalizes its own statements, so a failure leaves none alive and the
+            // close below is a clean one.
+            if sqlite3_exec(db, deleteString, nil, nil, nil) == SQLITE_OK {
+                MixpanelLogger.info(message: "Successfully deleted all rows from every table")
+                return true
+            }
+            logSqlError(message: "Failed to delete all rows")
+        }
+        close()
+        let removed = removeDatabaseFiles()
+        reconnect()
+        return removed
+    }
+
+    /// Removes the database file and its `-wal` and `-shm` files. Returns true only when none of
+    /// the three exists afterwards.
+    private func removeDatabaseFiles() -> Bool {
+        guard let dbPath = pathToDb() else {
+            return false
+        }
+        let manager = FileManager.default
+        var removedAll = true
+        for path in [dbPath, dbPath + "-wal", dbPath + "-shm"] where manager.fileExists(atPath: path) {
+            do {
+                try manager.removeItem(atPath: path)
+                MixpanelLogger.info(message: "Deleted database file at path: \(path)")
+            } catch let error {
+                MixpanelLogger.error(
+                    message: "Unable to remove database file at path: \(path), error: \(error)")
+                removedAll = false
+            }
+        }
+        return removedAll
+    }
+
     private func idsSqlString(_ ids: [Int32] = []) -> String {
         var sqlString = "("
         for id in ids {
